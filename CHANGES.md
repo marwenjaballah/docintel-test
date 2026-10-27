@@ -20,3 +20,9 @@
 - POST /extract now queues the job and returns 202 with a polling link. GET /results/{rid} shows the status.
 - Added redis and worker to docker-compose, with healthchecks.
 - Test for submit (202), then poll for the result.
+
+## Task 3: Docker image (tickets 3 & 4)
+- Moved from the 1GB+ python:3.11 image to a multi-stage python:3.11-slim build.
+- Runs as non-root appuser (UID 1000).
+- Compiles to .pyc and deletes the .py files, so the image doesn’t ship readable source.
+- .dockerignore now skips tests, venvs, local DBs, docs and caches.
