@@ -1,16 +1,19 @@
 import json
 import logging
 import os
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db import engine, session
+from app.db import engine, get_db
 from app.llm import get_provider
 from app.models import Base, Result
+from app.schemas import ExtractResponse, MatchRequest, MatchResponse, ResultResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docintel")
@@ -27,6 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="docintel", version="0.1.0", lifespan=lifespan)
 
+# cors configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -36,9 +40,13 @@ app.add_middleware(
 )
 
 
+# constant-time auth check to prevent timing attacks
 def check_auth(x_api_key: str = Header(default=None)):
-    if x_api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="invalid api key")
+    if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid api key",
+        )
 
 
 @app.get("/health")
@@ -46,48 +54,66 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/extract")
-async def extract(file: UploadFile = File(...), _=Depends(check_auth)):
+@app.post("/extract", response_model=ExtractResponse)
+async def extract(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(check_auth),
+):
     content = await file.read()
 
-    # keep a copy of the upload around so we can debug extractions
+    # sanitize filename to prevent path traversal
     try:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        with open(os.path.join(UPLOAD_DIR, file.filename), "wb") as f:
+        safe_name = f"{uuid.uuid4().hex}_{os.path.basename(file.filename or 'upload')}"
+        with open(os.path.join(UPLOAD_DIR, safe_name), "wb") as f:
             f.write(content)
     except Exception as e:
         logger.warning("could not save upload: %s", e)
 
     text = content.decode("utf-8", errors="ignore")
-    logger.info("extracting profile from CV: %s", text)
+    # avoid logging raw text to prevent pii leaks
+    logger.info("extracting profile from document (%d bytes)", len(content))
 
     try:
         profile = get_provider().extract(text)
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"extraction failed: {e}",
+        )
 
     rid = uuid.uuid4().hex
-    session.add(Result(id=rid, kind="extract", payload=json.dumps(profile)))
-    await session.commit()
+    db.add(Result(id=rid, kind="extract", payload=json.dumps(profile)))
+    await db.commit()
     return {"id": rid, "profile": profile}
 
 
-@app.post("/match")
-async def match(body: dict, _=Depends(check_auth)):
-    profile = body.get("profile") or {}
-    job_description = body.get("job_description") or ""
-
-    result = get_provider().match(profile, job_description)
+@app.post("/match", response_model=MatchResponse)
+async def match(
+    body: MatchRequest,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(check_auth),
+):
+    result = get_provider().match(body.profile, body.job_description)
 
     rid = uuid.uuid4().hex
-    session.add(Result(id=rid, kind="match", payload=json.dumps(result)))
-    await session.commit()
+    db.add(Result(id=rid, kind="match", payload=json.dumps(result)))
+    await db.commit()
     return {"id": rid, **result}
 
 
-@app.get("/results/{rid}")
-async def get_result(rid: str):
-    obj = await session.get(Result, rid)
+# added auth check and 404 status code
+@app.get("/results/{rid}", response_model=ResultResponse)
+async def get_result(
+    rid: str,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(check_auth),
+):
+    obj = await db.get(Result, rid)
     if obj is None:
-        return {"error": "not found"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="result not found",
+        )
     return {"id": obj.id, "kind": obj.kind, "result": json.loads(obj.payload)}

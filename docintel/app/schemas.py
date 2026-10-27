@@ -19,3 +19,19 @@ class MatchResult(BaseModel):
     matched_skills: List[str]
     missing_skills: Optional[List[str]] = None
     rationale: str
+
+
+# response schemas
+class ExtractResponse(BaseModel):
+    id: str
+    profile: Profile
+
+
+class MatchResponse(MatchResult):
+    id: str
+
+
+class ResultResponse(BaseModel):
+    id: str
+    kind: str
+    result: dict

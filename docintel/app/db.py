@@ -6,5 +6,7 @@ engine = create_async_engine(settings.database_url, echo=settings.debug)
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
-# One session for the whole app. Simple and it works fine in dev.
-session: AsyncSession = SessionLocal()
+# per-request session dependency
+async def get_db():
+    async with SessionLocal() as db_session:
+        yield db_session
