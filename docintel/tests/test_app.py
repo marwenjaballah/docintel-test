@@ -8,9 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app
+from app.worker import celery_app
 
-settings.llm_latency = 0  # don't wait for fake model in tests
+# test configurations: no latency, synchronous celery execution
+settings.llm_latency = 0
+settings.celery_task_always_eager = True
+celery_app.conf.task_always_eager = True
+
+from app.main import app
 
 
 @pytest.fixture(scope="module")
@@ -43,14 +48,29 @@ def test_extract_invalid_key(client):
     assert r.status_code == 401
 
 
-def test_extract_ok(client):
+def test_extract_async_202_and_poll(client):
+    # submit extraction job
     r = client.post(
         "/extract",
         headers={"x-api-key": settings.api_key},
         files={"file": ("cv.txt", b"Jane Doe\nPython and FastAPI, 5 years")},
     )
-    assert r.status_code == 200
-    assert "python" in r.json()["profile"]["skills"]
+    assert r.status_code == 202
+    data = r.json()
+    assert "id" in data
+    assert data["status"] == "pending"
+    assert data["poll_url"] == f"/results/{data['id']}"
+
+    # in eager mode, the worker executes immediately; verify result
+    res = client.get(
+        data["poll_url"],
+        headers={"x-api-key": settings.api_key},
+    )
+    assert res.status_code == 200
+    res_data = res.json()
+    assert res_data["id"] == data["id"]
+    assert res_data["status"] == "completed"
+    assert "python" in res_data["result"]["skills"]
 
 
 def test_results_requires_auth(client):
@@ -68,7 +88,6 @@ def test_results_not_found(client):
 
 
 def test_match_and_fetch_result(client):
-    # test match endpoint with typed request schema
     payload = {
         "profile": {"skills": ["python", "fastapi"]},
         "job_description": "We need Python and FastAPI with Docker.",
@@ -90,4 +109,6 @@ def test_match_and_fetch_result(client):
         headers={"x-api-key": settings.api_key},
     )
     assert res.status_code == 200
-    assert res.json()["kind"] == "match"
+    res_data = res.json()
+    assert res_data["kind"] == "match"
+    assert res_data["status"] == "completed"

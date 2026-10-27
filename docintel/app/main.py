@@ -13,7 +13,8 @@ from app.config import settings
 from app.db import engine, get_db
 from app.llm import get_provider
 from app.models import Base, Result
-from app.schemas import ExtractResponse, MatchRequest, MatchResponse, ResultResponse
+from app.schemas import ExtractJobAccepted, MatchRequest, MatchResponse, ResultResponse
+from app.worker import extract_document_task
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docintel")
@@ -54,7 +55,12 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/extract", response_model=ExtractResponse)
+# ticket 1: asynchronous offloading with 202 Accepted
+@app.post(
+    "/extract",
+    response_model=ExtractJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def extract(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -72,21 +78,20 @@ async def extract(
         logger.warning("could not save upload: %s", e)
 
     text = content.decode("utf-8", errors="ignore")
-    # avoid logging raw text to prevent pii leaks
-    logger.info("extracting profile from document (%d bytes)", len(content))
-
-    try:
-        profile = get_provider().extract(text)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"extraction failed: {e}",
-        )
+    logger.info("queued extraction job for document (%d bytes)", len(content))
 
     rid = uuid.uuid4().hex
-    db.add(Result(id=rid, kind="extract", payload=json.dumps(profile)))
+    db.add(Result(id=rid, kind="extract", status="pending", payload=None))
     await db.commit()
-    return {"id": rid, "profile": profile}
+
+    # dispatch task to celery queue
+    extract_document_task.delay(rid, text)
+
+    return {
+        "id": rid,
+        "status": "pending",
+        "poll_url": f"/results/{rid}",
+    }
 
 
 @app.post("/match", response_model=MatchResponse)
@@ -98,12 +103,12 @@ async def match(
     result = get_provider().match(body.profile, body.job_description)
 
     rid = uuid.uuid4().hex
-    db.add(Result(id=rid, kind="match", payload=json.dumps(result)))
+    db.add(Result(id=rid, kind="match", status="completed", payload=json.dumps(result)))
     await db.commit()
     return {"id": rid, **result}
 
 
-# added auth check and 404 status code
+# fetch result by id with status tracking
 @app.get("/results/{rid}", response_model=ResultResponse)
 async def get_result(
     rid: str,
@@ -116,4 +121,12 @@ async def get_result(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="result not found",
         )
-    return {"id": obj.id, "kind": obj.kind, "result": json.loads(obj.payload)}
+
+    parsed_result = json.loads(obj.payload) if obj.payload else None
+    return {
+        "id": obj.id,
+        "kind": obj.kind,
+        "status": obj.status,
+        "result": parsed_result,
+        "error": obj.error,
+    }

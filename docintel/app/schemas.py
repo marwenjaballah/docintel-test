@@ -21,17 +21,21 @@ class MatchResult(BaseModel):
     rationale: str
 
 
-# response schemas
-class ExtractResponse(BaseModel):
+# async job response for POST /extract
+class ExtractJobAccepted(BaseModel):
     id: str
-    profile: Profile
+    status: str = "pending"
+    poll_url: str
 
 
 class MatchResponse(MatchResult):
     id: str
 
 
+# result polling response
 class ResultResponse(BaseModel):
     id: str
     kind: str
-    result: dict
+    status: str
+    result: Optional[dict] = None
+    error: Optional[str] = None
