@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docintel-config
+  namespace: docintel
+data:
+  LLM_PROVIDER: "fake"
+  LLM_LATENCY: "0.5"
+  DEBUG: "false"
+  CORS_ORIGINS: '["*"]'
+  DATABASE_URL: "postgresql+asyncpg://docintel:docintel@postgres:5432/docintel"
+  REDIS_URL: "redis://redis:6379/0"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: docintel-secrets
+  namespace: docintel
+type: Opaque
+stringData:
+  API_KEY: "prod-secret-token-replace-with-vault"
+  POSTGRES_USER: "docintel"
+  POSTGRES_PASSWORD: "docintel_secure_password"
+  POSTGRES_DB: "docintel"
+  OPENAI_API_KEY: ""

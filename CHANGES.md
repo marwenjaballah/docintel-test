@@ -41,3 +41,11 @@
 - The health check now pings the DB too.
 - GitHub Actions workflow runs Ruff, the tests on Python 3.11 and a Docker build.
 - Tests for /metrics and X-Request-ID passthrough.
+
+## Task 6: Kubernetes manifests (ticket 9)
+- Everything’s in k8s/.
+- namespace.yaml gives it its own docintel namespace.
+- configmap.yaml and secret.yaml hold the env vars and secrets.
+- services.yaml has Postgres and Redis.
+- app.yaml has the API (non-root, with probes), the Celery worker (graceful shutdown) and an HPA.
+- kustomization.yaml lets you deploy with kubectl apply -k k8s/.
