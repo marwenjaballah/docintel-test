@@ -48,6 +48,15 @@ def test_extract_invalid_key(client):
     assert r.status_code == 401
 
 
+def test_extract_non_ascii_key(client):
+    r = client.post(
+        "/extract",
+        headers={"x-api-key": "café".encode("latin-1")},
+        files={"file": ("cv.txt", b"Python developer")},
+    )
+    assert r.status_code == 401
+
+
 def test_extract_async_202_and_poll(client):
     # submit extraction job
     r = client.post(

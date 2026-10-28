@@ -72,7 +72,9 @@ api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
 def check_auth(x_api_key: str = Security(api_key_header)):
-    if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
+    if not x_api_key or not secrets.compare_digest(
+        x_api_key.encode("utf-8"), settings.api_key.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid api key",
