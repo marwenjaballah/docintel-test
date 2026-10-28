@@ -33,3 +33,11 @@
 - Set up OpenAPI tags and metadata, plus APIKeyHeader so the Authorize button works.
 - Added POST /match/batch. Send it candidates and a job description, and it scores and ranks them.
 - Test for ranking order and fetching results afterward.
+
+## Task 5: Logs, metrics and CI (tickets 7 & 10)
+- JSON log formatter with timestamp, level and request ID in app/observability.py.
+- Middleware that picks up X-Request-ID (or generates one) and returns it in the response.
+- Prometheus request counts and latency histograms, exposed at GET /metrics.
+- The health check now pings the DB too.
+- GitHub Actions workflow runs Ruff, the tests on Python 3.11 and a Docker build.
+- Tests for /metrics and X-Request-ID passthrough.

@@ -161,3 +161,15 @@ def test_batch_match(client):
     )
     assert batch_res.status_code == 200
     assert batch_res.json()["kind"] == "batch_match"
+
+
+def test_request_id_propagation(client):
+    r = client.get("/health", headers={"x-request-id": "custom-trace-1234"})
+    assert r.status_code == 200
+    assert r.headers.get("x-request-id") == "custom-trace-1234"
+
+
+def test_metrics_endpoint(client):
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "http_requests_total" in r.text

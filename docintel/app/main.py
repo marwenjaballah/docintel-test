@@ -5,15 +5,18 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Response, Security, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import engine, get_db
 from app.llm import get_provider
 from app.models import Base, Result
+from app.observability import ObservabilityMiddleware, setup_logging
 from app.schemas import (
     BatchMatchRequest,
     BatchMatchResponse,
@@ -26,7 +29,7 @@ from app.schemas import (
 )
 from app.worker import extract_document_task
 
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 logger = logging.getLogger("docintel")
 
 UPLOAD_DIR = "uploads"
@@ -39,7 +42,6 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# ticket 6: enriched openapi documentation
 app = FastAPI(
     title="docintel API",
     description="Document Intelligence Service for candidate CV extraction, scoring, and candidate ranking.",
@@ -50,9 +52,14 @@ app = FastAPI(
         {"name": "Extraction", "description": "Asynchronous document profile extraction pipeline"},
         {"name": "Matching", "description": "Candidate scoring and ranking against job requirements"},
         {"name": "Results", "description": "Query historical and queued task results"},
+        {"name": "Observability", "description": "Prometheus metrics and runtime telemetry"},
     ],
 )
 
+# observability and tracing middleware
+app.add_middleware(ObservabilityMiddleware)
+
+# cors configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -61,7 +68,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# swagger ui apiKey header definition
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
@@ -73,9 +79,24 @@ def check_auth(x_api_key: str = Security(api_key_header)):
         )
 
 
-@app.get("/health", tags=["Health"], summary="Liveness Probe")
-async def health():
+# deep health check
+@app.get("/health", tags=["Health"], summary="Deep Health & Readiness Check")
+async def health(db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as e:
+        logger.error("database health check failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database unavailable",
+        )
     return {"status": "ok"}
+
+
+# prometheus metrics endpoint
+@app.get("/metrics", tags=["Observability"], summary="Prometheus Metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post(
@@ -98,7 +119,6 @@ async def extract(
 ):
     content = await file.read()
 
-    # sanitize filename to prevent path traversal
     try:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         safe_name = f"{uuid.uuid4().hex}_{os.path.basename(file.filename or 'upload')}"
@@ -107,15 +127,14 @@ async def extract(
     except Exception as e:
         logger.warning("could not save upload: %s", e)
 
-    text = content.decode("utf-8", errors="ignore")
+    text_content = content.decode("utf-8", errors="ignore")
     logger.info("queued extraction job for document (%d bytes)", len(content))
 
     rid = uuid.uuid4().hex
     db.add(Result(id=rid, kind="extract", status="pending", payload=None))
     await db.commit()
 
-    # dispatch task to celery queue
-    extract_document_task.delay(rid, text)
+    extract_document_task.delay(rid, text_content)
 
     return {
         "id": rid,
@@ -148,7 +167,6 @@ async def match(
     return {"id": rid, **result}
 
 
-# ticket 8: batch candidate matching feature
 @app.post(
     "/match/batch",
     tags=["Matching"],
@@ -179,7 +197,6 @@ async def batch_match(
             "rationale": match_out["rationale"],
         })
 
-    # sort candidates descending by match score
     scored_candidates.sort(key=lambda c: c["score"], reverse=True)
 
     rankings = [
