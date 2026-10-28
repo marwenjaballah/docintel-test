@@ -5,15 +5,25 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import engine, get_db
 from app.llm import get_provider
 from app.models import Base, Result
-from app.schemas import ExtractJobAccepted, MatchRequest, MatchResponse, ResultResponse
+from app.schemas import (
+    BatchMatchRequest,
+    BatchMatchResponse,
+    ErrorResponse,
+    ExtractJobAccepted,
+    MatchRequest,
+    MatchResponse,
+    RankedCandidate,
+    ResultResponse,
+)
 from app.worker import extract_document_task
 
 logging.basicConfig(level=logging.INFO)
@@ -29,9 +39,20 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="docintel", version="0.1.0", lifespan=lifespan)
+# ticket 6: enriched openapi documentation
+app = FastAPI(
+    title="docintel API",
+    description="Document Intelligence Service for candidate CV extraction, scoring, and candidate ranking.",
+    version="1.0.0",
+    lifespan=lifespan,
+    openapi_tags=[
+        {"name": "Health", "description": "Liveness and operational checks"},
+        {"name": "Extraction", "description": "Asynchronous document profile extraction pipeline"},
+        {"name": "Matching", "description": "Candidate scoring and ranking against job requirements"},
+        {"name": "Results", "description": "Query historical and queued task results"},
+    ],
+)
 
-# cors configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -40,9 +61,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# swagger ui apiKey header definition
+api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
-# constant-time auth check to prevent timing attacks
-def check_auth(x_api_key: str = Header(default=None)):
+
+def check_auth(x_api_key: str = Security(api_key_header)):
     if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -50,19 +73,26 @@ def check_auth(x_api_key: str = Header(default=None)):
         )
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"], summary="Liveness Probe")
 async def health():
     return {"status": "ok"}
 
 
-# ticket 1: asynchronous offloading with 202 Accepted
 @app.post(
     "/extract",
-    response_model=ExtractJobAccepted,
+    tags=["Extraction"],
+    summary="Enqueue CV Profile Extraction",
+    description="Accepts a document upload, safely stores it, and enqueues an asynchronous extraction job.",
     status_code=status.HTTP_202_ACCEPTED,
+    response_model=ExtractJobAccepted,
+    responses={
+        202: {"description": "Extraction job accepted and queued"},
+        401: {"model": ErrorResponse, "description": "Missing or invalid API key"},
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
 )
 async def extract(
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="CV document file (txt, pdf)"),
     db: AsyncSession = Depends(get_db),
     _=Depends(check_auth),
 ):
@@ -94,7 +124,17 @@ async def extract(
     }
 
 
-@app.post("/match", response_model=MatchResponse)
+@app.post(
+    "/match",
+    tags=["Matching"],
+    summary="Score Single Candidate Profile",
+    description="Scores an extracted candidate profile against a job description.",
+    response_model=MatchResponse,
+    responses={
+        200: {"description": "Match result computed successfully"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+    },
+)
 async def match(
     body: MatchRequest,
     db: AsyncSession = Depends(get_db),
@@ -108,8 +148,81 @@ async def match(
     return {"id": rid, **result}
 
 
-# fetch result by id with status tracking
-@app.get("/results/{rid}", response_model=ResultResponse)
+# ticket 8: batch candidate matching feature
+@app.post(
+    "/match/batch",
+    tags=["Matching"],
+    summary="Batch Match and Rank Candidates",
+    description="Evaluates multiple candidate profiles against a job description and returns a ranked shortlist.",
+    response_model=BatchMatchResponse,
+    responses={
+        200: {"description": "Candidates evaluated and ranked"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+    },
+)
+async def batch_match(
+    body: BatchMatchRequest,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(check_auth),
+):
+    provider = get_provider()
+    scored_candidates = []
+
+    for cand in body.candidates:
+        match_out = provider.match({"skills": cand.skills}, body.job_description)
+        scored_candidates.append({
+            "candidate_id": cand.candidate_id,
+            "name": cand.name,
+            "score": match_out["score"],
+            "matched_skills": match_out["matched_skills"],
+            "missing_skills": match_out.get("missing_skills") or [],
+            "rationale": match_out["rationale"],
+        })
+
+    # sort candidates descending by match score
+    scored_candidates.sort(key=lambda c: c["score"], reverse=True)
+
+    rankings = [
+        RankedCandidate(rank=idx + 1, **cand)
+        for idx, cand in enumerate(scored_candidates)
+    ]
+
+    scores = [c["score"] for c in scored_candidates]
+    highest = max(scores) if scores else 0
+    average = round(sum(scores) / len(scores), 2) if scores else 0.0
+
+    rid = uuid.uuid4().hex
+    batch_payload = {
+        "total_candidates": len(scored_candidates),
+        "highest_score": highest,
+        "average_score": average,
+        "rankings": [r.model_dump() for r in rankings],
+    }
+
+    db.add(Result(id=rid, kind="batch_match", status="completed", payload=json.dumps(batch_payload)))
+    await db.commit()
+
+    return {
+        "id": rid,
+        "total_candidates": len(scored_candidates),
+        "highest_score": highest,
+        "average_score": average,
+        "rankings": rankings,
+    }
+
+
+@app.get(
+    "/results/{rid}",
+    tags=["Results"],
+    summary="Retrieve Result by ID",
+    description="Retrieves the result and completion status of an extraction or match operation.",
+    response_model=ResultResponse,
+    responses={
+        200: {"description": "Result record found"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        404: {"model": ErrorResponse, "description": "Result not found"},
+    },
+)
 async def get_result(
     rid: str,
     db: AsyncSession = Depends(get_db),

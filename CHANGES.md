@@ -26,3 +26,10 @@
 - Runs as non-root appuser (UID 1000).
 - Compiles to .pyc and deletes the .py files, so the image doesn’t ship readable source.
 - .dockerignore now skips tests, venvs, local DBs, docs and caches.
+
+## Task 4: Swagger docs and batch matching (tickets 6 & 8)
+- Added descriptions and examples to the schemas so Swagger UI is readable.
+- New schemas: BatchMatchRequest, BatchCandidate, RankedCandidate, BatchMatchResponse.
+- Set up OpenAPI tags and metadata, plus APIKeyHeader so the Authorize button works.
+- Added POST /match/batch. Send it candidates and a job description, and it scores and ranks them.
+- Test for ranking order and fetching results afterward.

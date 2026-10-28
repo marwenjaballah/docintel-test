@@ -112,3 +112,52 @@ def test_match_and_fetch_result(client):
     res_data = res.json()
     assert res_data["kind"] == "match"
     assert res_data["status"] == "completed"
+
+
+def test_batch_match(client):
+    payload = {
+        "job_description": "We need Python and FastAPI with Docker.",
+        "candidates": [
+            {
+                "candidate_id": "cand_01",
+                "name": "Alice Developer",
+                "skills": ["python", "fastapi", "docker"],
+                "years_experience": 5,
+            },
+            {
+                "candidate_id": "cand_02",
+                "name": "Bob Junior",
+                "skills": ["java"],
+                "years_experience": 1,
+            },
+        ],
+    }
+
+    # unauthorized check
+    unauth = client.post("/match/batch", json=payload)
+    assert unauth.status_code == 401
+
+    # authorized batch match
+    r = client.post(
+        "/match/batch",
+        headers={"x-api-key": settings.api_key},
+        json=payload,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_candidates"] == 2
+    assert data["highest_score"] == 100
+    assert len(data["rankings"]) == 2
+    # assert Alice is ranked 1st
+    assert data["rankings"][0]["candidate_id"] == "cand_01"
+    assert data["rankings"][0]["rank"] == 1
+    assert data["rankings"][1]["candidate_id"] == "cand_02"
+    assert data["rankings"][1]["rank"] == 2
+
+    # verify persistence and retrieval
+    batch_res = client.get(
+        f"/results/{data['id']}",
+        headers={"x-api-key": settings.api_key},
+    )
+    assert batch_res.status_code == 200
+    assert batch_res.json()["kind"] == "batch_match"
