@@ -49,3 +49,10 @@
 - services.yaml has Postgres and Redis.
 - app.yaml has the API (non-root, with probes), the Celery worker (graceful shutdown) and an HPA.
 - kustomization.yaml lets you deploy with kubectl apply -k k8s/.
+
+## Task 7: Prompt injection and load testing (tickets 13 & 17)
+- Documents in app/llm.py are capped at MAX_DOCUMENT_CHARS = 50000, and null bytes are stripped.
+- Input is wrapped in <cv_document> and <candidate_profile> tags, separate from the system instructions, to blunt injection attempts.
+- LLM output is validated with Pydantic (ExtractedProfileSchema, MatchScoreSchema).
+- tests/test_security.py covers injection attempts, truncation and score bounds.
+- locustfile.py simulates concurrent users hitting health, single match, batch match and extract-then-poll.
