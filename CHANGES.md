@@ -56,3 +56,9 @@
 - LLM output is validated with Pydantic (ExtractedProfileSchema, MatchScoreSchema).
 - tests/test_security.py covers injection attempts, truncation and score bounds.
 - locustfile.py simulates concurrent users hitting health, single match, batch match and extract-then-poll.
+
+## Task 8: Env files and secrets (ticket 2)
+- Added .env.example template for setup and onboarding.
+- Confirmed .env is in .gitignore, so credentials don’t get committed.
+- Removed fallback default secrets and database URLs from app/config.py to enforce strict 12-factor configuration.
+- Every service in docker-compose.yml now loads env_file: .env.

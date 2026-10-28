@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     cors_origins: List[str] = ["*"]
 
     # Auth
-    api_key: str = "dev-secret-key-change-me"
+    api_key: str
 
     # LLM
     llm_provider: str = "fake"  # "fake" | "openai"
@@ -20,10 +20,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # Storage
-    database_url: str = "postgresql+asyncpg://docintel:docintel@localhost:5432/docintel"
+    database_url: str
 
     # Queue
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str
     celery_task_always_eager: bool = False
 
 

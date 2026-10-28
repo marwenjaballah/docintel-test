@@ -7,7 +7,7 @@ Run locally:
 import os
 from locust import HttpUser, between, task
 
-API_KEY = os.getenv("API_KEY", "dev-secret-key-change-me")
+API_KEY = os.getenv("API_KEY", "")
 
 
 class DocIntelUser(HttpUser):
